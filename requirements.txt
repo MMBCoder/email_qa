@@ -2,3 +2,5 @@ streamlit
 PyMuPDF
 pytesseract
 Pillow
+pandas
+openai
