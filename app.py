@@ -52,9 +52,11 @@ def extract_eml_content(eml_file):
 def compare_texts(pdf_text, eml_text):
     seq_matcher = difflib.SequenceMatcher(None, pdf_text.lower(), eml_text.lower())
     match_ratio = seq_matcher.ratio()
-    diff = [pdf_text[a:a+n] for op, a, b, i, n in seq_matcher.get_opcodes() if op != 'equal']
+    differences = [
+        pdf_text[a:a+n] for op, a, b, i, n in seq_matcher.get_opcodes() if op != 'equal'
+    ]
     overall_score = match_ratio * 100
-    return overall_score, diff
+    return overall_score, differences
 
 # Comparing PDF comments to EML file content
 def compare_comments_to_eml(comments, eml_text):
@@ -68,53 +70,55 @@ def compare_comments_to_eml(comments, eml_text):
     return results
 
 # Streamlit UI
-st.title('Email Legal Review Comparison App')
+st.title('Email QA Proof vs Legal Comparision')
 
 # File uploaders
 eml_file = st.file_uploader('Upload .eml File', type=['eml'])
 pdf_file = st.file_uploader('Upload Legal Review PDF', type=['pdf'])
 
-if eml_file and pdf_file:
-    # Extracting content
-    pdf_text, pdf_comments = extract_pdf_text_comments(pdf_file)
-    eml_text, eml_images_text = extract_eml_content(eml_file)
+# Submit button
+if st.button('Submit'):
+    if eml_file and pdf_file:
+        # Extracting content
+        pdf_text, pdf_comments = extract_pdf_text_comments(pdf_file)
+        eml_text, eml_images_text = extract_eml_content(eml_file)
 
-    combined_eml_text = eml_text + " " + eml_images_text
+        combined_eml_text = eml_text + " " + eml_images_text
 
-    # Text comparison for match score and differences
-    match_score, differences = compare_texts(pdf_text, combined_eml_text)
+        # Text comparison for match score and differences
+        match_score, differences = compare_texts(pdf_text, combined_eml_text)
 
-    # Comparison of comments implementation
-    comparison_results = compare_comments_to_eml(pdf_comments, combined_eml_text)
+        # Comparison of comments implementation
+        comparison_results = compare_comments_to_eml(pdf_comments, combined_eml_text)
 
-    st.header("Comparison Results")
-    st.metric("Overall Text Match Score (%)", f"{match_score:.2f}%")
+        st.header("Comparison Results")
+        st.metric("Overall Text Match Score (%)", f"{match_score:.2f}%")
 
-    st.subheader("Text Differences")
-    if differences:
-        for diff in differences:
-            st.warning(diff)
+        st.subheader("Text Differences")
+        if differences:
+            for diff in differences:
+                st.warning(diff)
+        else:
+            st.success("No differences found!")
+
+        st.subheader("Comments Not Implemented")
+        for idx, (comment, implemented, ratio) in enumerate(comparison_results):
+            if not implemented:
+                st.error(f"❌ Comment {idx+1}: '{comment}' not implemented (Match ratio: {ratio:.2f})")
+
+        st.subheader("Detailed Comment Check")
+        for idx, (comment, implemented, ratio) in enumerate(comparison_results):
+            status = "Implemented ✅" if implemented else "Not Implemented ❌"
+            highlight = "🔴" if not implemented else "🟢"
+            st.write(f"{highlight} Comment: {comment}")
+            st.write(f"Status: {status} (Match ratio: {ratio:.2f})")
+            st.divider()
+
+        st.header("View PDF Content")
+        st.text_area("PDF Text Content", pdf_text, height=200)
+
+        st.header("View Extracted Email Text")
+        st.text_area("Email Text Content", combined_eml_text, height=200)
+
     else:
-        st.success("No differences found!")
-
-    st.subheader("Comments Not Implemented")
-    for idx, (comment, implemented, ratio) in enumerate(comparison_results):
-        if not implemented:
-            st.error(f"❌ Comment {idx+1}: '{comment}' not implemented (Match ratio: {ratio:.2f})")
-
-    st.subheader("Detailed Comment Check")
-    for idx, (comment, implemented, ratio) in enumerate(comparison_results):
-        status = "Implemented ✅" if implemented else "Not Implemented ❌"
-        highlight = "🔴" if not implemented else "🟢"
-        st.write(f"{highlight} Comment: {comment}")
-        st.write(f"Status: {status} (Match ratio: {ratio:.2f})")
-        st.divider()
-
-    st.header("View PDF Content")
-    st.text_area("PDF Text Content", pdf_text, height=200)
-
-    st.header("View Extracted Email Text")
-    st.text_area("Email Text Content", combined_eml_text, height=200)
-
-else:
-    st.warning('Please upload both .eml and PDF files to proceed.')
+        st.warning('Please upload both .eml and PDF files to proceed.')
