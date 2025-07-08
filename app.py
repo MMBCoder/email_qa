@@ -8,11 +8,12 @@ import io
 import difflib
 import re
 import pandas as pd
+import openai
 
 # Utility to clean and normalize text
 def clean_text(text):
-    text = re.sub(r'<[^>]+>', '', text)  # Remove HTML tags
-    text = re.sub(r'https?://\S+', '', text)  # Remove URLs for text match only (will compare URLs separately)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'https?://\S+', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -29,13 +30,13 @@ def extract_pdf_text_comments(pdf_file):
         urls += re.findall(r'https?://\S+', text)
         annot = page.first_annot
         while annot:
-            if annot.info["content"]:
+            if annot.info.get("content"):
                 comments.append(annot.info["content"].strip())
             annot = annot.next
 
     return full_text, comments, urls
 
-# Extract and clean EML content (text + OCR)
+# Extract and clean EML content
 def extract_eml_content(eml_file):
     msg = BytesParser(policy=policy.default).parse(eml_file)
 
@@ -58,11 +59,9 @@ def extract_eml_content(eml_file):
 
     return text_content, images_text, urls
 
-# Structured comparison of content and URLs
+# Structured comparison
 def structured_differences(pdf_text, eml_text, pdf_urls, eml_urls):
     diffs = []
-
-    # Text comparison using difflib
     sm = difflib.SequenceMatcher(None, pdf_text.lower(), eml_text.lower())
     for op, i1, i2, j1, j2 in sm.get_opcodes():
         if op != 'equal':
@@ -72,8 +71,6 @@ def structured_differences(pdf_text, eml_text, pdf_urls, eml_urls):
                 'Extracted': pdf_text[i1:i2],
                 'Status': 'Not Found in Email'
             })
-
-    # URL differences
     for url in pdf_urls:
         if url not in eml_urls:
             diffs.append({
@@ -82,10 +79,9 @@ def structured_differences(pdf_text, eml_text, pdf_urls, eml_urls):
                 'Extracted': url,
                 'Status': 'Missing in Email'
             })
-
     return diffs
 
-# Compare PDF comments to EML content
+# Check PDF comments
 def compare_comments_to_eml(comments, eml_text):
     results = []
     for comment in comments:
@@ -94,11 +90,30 @@ def compare_comments_to_eml(comments, eml_text):
         results.append((comment, implemented, match_ratio))
     return results
 
+# Use OpenAI API for semantic similarity
+def semantic_similarity(pdf_text, eml_text, openai_key):
+    openai.api_key = openai_key
+    prompt = f"""Compare the following two texts for semantic similarity. Give a similarity score (0–100) and summarize major differences.
+
+--- PDF Content ---\n{pdf_text[:3000]}
+
+--- EML Content ---\n{eml_text[:3000]}"""
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response['choices'][0]['message']['content']
+    except Exception as e:
+        return f"OpenAI API Error: {e}"
+
 # Streamlit UI
 st.title('Email QA Proof vs Legal Comparision')
 
 eml_file = st.file_uploader('Upload .eml File', type=['eml'])
 pdf_file = st.file_uploader('Upload Legal Review PDF', type=['pdf'])
+import os
+openai_key = os.getenv("OPENAI_API_KEY")
 
 if st.button('Submit'):
     if eml_file and pdf_file:
@@ -107,18 +122,19 @@ if st.button('Submit'):
 
         combined_eml_text = eml_text + " " + eml_images_text
 
-        # Main content match score
         match_ratio = difflib.SequenceMatcher(None, pdf_text.lower(), combined_eml_text.lower()).ratio()
         match_score = match_ratio * 100
 
-        # Structured differences
         differences = structured_differences(pdf_text, combined_eml_text, pdf_urls, eml_urls)
-
-        # Check annotations
         comment_results = compare_comments_to_eml(pdf_comments, combined_eml_text)
 
         st.header("Comparison Results")
-        st.metric("Overall Text Match Score (%)", f"{match_score:.2f}%")
+        st.metric("Basic Text Match Score (%)", f"{match_score:.2f}%")
+
+        if openai_key:
+            st.subheader("Semantic Match (via OpenAI GPT-4) - Using Env Key")
+            semantic_result = semantic_similarity(pdf_text, combined_eml_text, openai_key)
+            st.text_area("GPT-4 Comparison Result", semantic_result, height=250)
 
         st.subheader("Structured Differences")
         if differences:
