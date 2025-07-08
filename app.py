@@ -7,118 +7,141 @@ from PIL import Image
 import io
 import difflib
 import re
+import pandas as pd
 
-# PDF text and annotation extraction with cleaning
+# Utility to clean and normalize text
+def clean_text(text):
+    text = re.sub(r'<[^>]+>', '', text)  # Remove HTML tags
+    text = re.sub(r'https?://\S+', '', text)  # Remove URLs for text match only (will compare URLs separately)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+# Extract and clean PDF content
 def extract_pdf_text_comments(pdf_file):
     pdf = fitz.open(stream=pdf_file.read(), filetype="pdf")
     comments = []
     full_text = ''
+    urls = []
 
     for page in pdf:
         text = page.get_text()
-        text = re.sub(r'\s+', ' ', text).strip()
-        full_text += text
+        full_text += clean_text(text)
+        urls += re.findall(r'https?://\S+', text)
         annot = page.first_annot
         while annot:
             if annot.info["content"]:
                 comments.append(annot.info["content"].strip())
             annot = annot.next
 
-    return full_text, comments
+    return full_text, comments, urls
 
-# Email text and image extraction with cleaning
+# Extract and clean EML content (text + OCR)
 def extract_eml_content(eml_file):
     msg = BytesParser(policy=policy.default).parse(eml_file)
 
     text_content = ''
     images_text = ''
+    urls = []
 
     for part in msg.walk():
         content_type = part.get_content_type()
 
         if content_type in ['text/plain', 'text/html']:
             text = part.get_content()
-            text = re.sub(r'<[^>]+>', '', text)
-            text_content += re.sub(r'\s+', ' ', text).strip()
+            urls += re.findall(r'https?://\S+', text)
+            text_content += clean_text(text)
 
         if content_type.startswith('image/'):
             image_data = part.get_payload(decode=True)
             image = Image.open(io.BytesIO(image_data))
-            images_text += re.sub(r'\s+', ' ', pytesseract.image_to_string(image)).strip()
+            images_text += clean_text(pytesseract.image_to_string(image))
 
-    return text_content, images_text
+    return text_content, images_text, urls
 
-# Comparing cleaned PDF text to EML file content
-def compare_texts(pdf_text, eml_text):
-    seq_matcher = difflib.SequenceMatcher(None, pdf_text.lower(), eml_text.lower())
-    match_ratio = seq_matcher.ratio()
-    differences = [
-        pdf_text[a:a+n] for op, a, b, i, n in seq_matcher.get_opcodes() if op != 'equal'
-    ]
-    overall_score = match_ratio * 100
-    return overall_score, differences
+# Structured comparison of content and URLs
+def structured_differences(pdf_text, eml_text, pdf_urls, eml_urls):
+    diffs = []
 
-# Comparing PDF comments to EML file content
+    # Text comparison using difflib
+    sm = difflib.SequenceMatcher(None, pdf_text.lower(), eml_text.lower())
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op != 'equal':
+            diffs.append({
+                'Type': 'Text',
+                'Source': 'PDF',
+                'Extracted': pdf_text[i1:i2],
+                'Status': 'Not Found in Email'
+            })
+
+    # URL differences
+    for url in pdf_urls:
+        if url not in eml_urls:
+            diffs.append({
+                'Type': 'URL',
+                'Source': 'PDF',
+                'Extracted': url,
+                'Status': 'Missing in Email'
+            })
+
+    return diffs
+
+# Compare PDF comments to EML content
 def compare_comments_to_eml(comments, eml_text):
     results = []
-
     for comment in comments:
         match_ratio = difflib.SequenceMatcher(None, comment.lower(), eml_text.lower()).ratio()
         implemented = match_ratio > 0.6
         results.append((comment, implemented, match_ratio))
-
     return results
 
 # Streamlit UI
 st.title('Email QA Proof vs Legal Comparision')
 
-# File uploaders
 eml_file = st.file_uploader('Upload .eml File', type=['eml'])
 pdf_file = st.file_uploader('Upload Legal Review PDF', type=['pdf'])
 
-# Submit button
 if st.button('Submit'):
     if eml_file and pdf_file:
-        # Extracting content
-        pdf_text, pdf_comments = extract_pdf_text_comments(pdf_file)
-        eml_text, eml_images_text = extract_eml_content(eml_file)
+        pdf_text, pdf_comments, pdf_urls = extract_pdf_text_comments(pdf_file)
+        eml_text, eml_images_text, eml_urls = extract_eml_content(eml_file)
 
         combined_eml_text = eml_text + " " + eml_images_text
 
-        # Text comparison for match score and differences
-        match_score, differences = compare_texts(pdf_text, combined_eml_text)
+        # Main content match score
+        match_ratio = difflib.SequenceMatcher(None, pdf_text.lower(), combined_eml_text.lower()).ratio()
+        match_score = match_ratio * 100
 
-        # Comparison of comments implementation
-        comparison_results = compare_comments_to_eml(pdf_comments, combined_eml_text)
+        # Structured differences
+        differences = structured_differences(pdf_text, combined_eml_text, pdf_urls, eml_urls)
+
+        # Check annotations
+        comment_results = compare_comments_to_eml(pdf_comments, combined_eml_text)
 
         st.header("Comparison Results")
         st.metric("Overall Text Match Score (%)", f"{match_score:.2f}%")
 
-        st.subheader("Text Differences")
+        st.subheader("Structured Differences")
         if differences:
-            for diff in differences:
-                st.warning(diff)
+            df = pd.DataFrame(differences)
+            st.dataframe(df)
         else:
-            st.success("No differences found!")
+            st.success("No major content or URL differences found!")
 
         st.subheader("Comments Not Implemented")
-        for idx, (comment, implemented, ratio) in enumerate(comparison_results):
+        for idx, (comment, implemented, ratio) in enumerate(comment_results):
             if not implemented:
                 st.error(f"❌ Comment {idx+1}: '{comment}' not implemented (Match ratio: {ratio:.2f})")
 
         st.subheader("Detailed Comment Check")
-        for idx, (comment, implemented, ratio) in enumerate(comparison_results):
+        for idx, (comment, implemented, ratio) in enumerate(comment_results):
             status = "Implemented ✅" if implemented else "Not Implemented ❌"
-            highlight = "🔴" if not implemented else "🟢"
-            st.write(f"{highlight} Comment: {comment}")
-            st.write(f"Status: {status} (Match ratio: {ratio:.2f})")
+            st.write(f"{status}: {comment} (Match ratio: {ratio:.2f})")
             st.divider()
 
-        st.header("View PDF Content")
-        st.text_area("PDF Text Content", pdf_text, height=200)
+        st.header("PDF Text Content")
+        st.text_area("Extracted PDF Text", pdf_text, height=150)
 
-        st.header("View Extracted Email Text")
-        st.text_area("Email Text Content", combined_eml_text, height=200)
-
+        st.header("Email Text Content")
+        st.text_area("Extracted Email Text", combined_eml_text, height=150)
     else:
         st.warning('Please upload both .eml and PDF files to proceed.')
