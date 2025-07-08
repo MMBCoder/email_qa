@@ -100,7 +100,7 @@ def semantic_similarity(pdf_text, eml_text, openai_key):
 --- EML Content ---\n{eml_text[:3000]}"""
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-4o",
             messages=[{"role": "user", "content": prompt}]
         )
         return response['choices'][0]['message']['content']
